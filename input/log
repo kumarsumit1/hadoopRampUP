@@ -1,318 +1,63 @@
------------------------------------------------------------------------------------------------
--- Name           : billing_adjustments_ppnet.sql
--- Type           : Hive SQL
--- Purpose        : Hive query to generate DBS for peoplenet based 20% manual adjustment.
--- Description    : The query dumps the DBS data of peoplenet into a temp table device_billing_summary_report with 20% adjustment. 
---                : This data is than processed by impala and exported into a csv file. billing_adjustments.sql should be called
---                  before calling this sql
--- Mod Log
--- Date       By             Jira     Description
--- ---------- -------------- -------- ---------------------------------------------------------
--- 2013-11-20 Nidhi Mittal   NGB-13   Created
--- 2013-11-21 Nidhi Mittal            Added placeholders for month and year in table name
--- 2013-12-20 Nidhi Mittal            Adjusted total charges and bill_total_traffic_charges with 20% adjustment
--- 2014-01-23 Nidhi Mittal   NGB-130  Changed DBS to DBS_Adjusted
--- 2014-01-30 Akansha Jain            Renamed to billing_adjustments_ppnet.sql, inserting data into device_billing_summary_adjusted tbl
--- 2014-02-14 Ashish Agrawal NGB-166  Add support for Custom fields
--- 2014-03-10 Ashish Agrawal NGB-178  Add Subscriber_ID column
--- 2014-03-14 Nidhi Mittal   NGB-80   Added rate_plan_start_date and rate_plan_end_date while insert from device_billing_summary to 					      device_billing_summary_adjusted        
--- 2014-03-28 Akansha Jain   NGB-199  Added pool_name column entry  
--- 2014-04-03 Akansha Jain            Changed table name from aeris.device_billing_summary_adjusted to aeris.device_billing_summary_adjusted_MONTH_PHYEAR_PH
--- 2014-07-01 Akansha Jain   BILL-538 Added rate_plan_name join
------------------------------------------------------------------------------------------------
+#  Logging level
+solr.log=logs
+log4j.rootLogger=INFO, file, CONSOLE
 
-use aeris;
+log4j.appender.CONSOLE=org.apache.log4j.ConsoleAppender
 
-create view aeris.dbs_manual_adj AS
-SELECT rate_plan_name,account_id,
-       total_bill_1xrtt_us_roaming_charges - IF (roaming_usage_percent <= 20,0,total_bill_1xrtt_us_roaming_charges - 0.2 * total_traffic) AS discounts_bill_1xrtt_us_roaming_charges,
-       total_bill_1xrtt_spec_carr_charges - IF (roaming_usage_percent <= 20,0,total_bill_1xrtt_spec_carr_charges - 0.2 * total_traffic ) AS discounts_bill_1xrtt_spec_carr_charges
-      FROM
-        (SELECT account_id,
-          rate_plan_name,
-          (SUM(bill_1xrtt_us_roaming_kb + bill_1xrtt_special_carrier_kb) /
-          SUM(bill_1xrtt_kb +(included_1xrtt_bytes/1024)+ bill_1xrtt_us_roaming_kb + bill_1xrtt_special_carrier_kb)) * 100 AS roaming_usage_percent,
-          SUM(bill_1xrtt_us_roaming_charges)                                                                                                                    AS total_bill_1xrtt_us_roaming_charges,
-          SUM(bill_1xrtt_spec_carr_charges)                                                                                                                     AS total_bill_1xrtt_spec_carr_charges,
-          SUM(bill_1xrtt_kb +(included_1xrtt_bytes/1024)+ bill_1xrtt_us_roaming_kb + bill_1xrtt_special_carrier_kb) as total_traffic
-        FROM aeris.device_billing_summary_MONTH_PHYEAR_PH
-        WHERE plan_included_1xrtt_kb > 0 and account_id = 10115
-        GROUP BY account_id,
-          rate_plan_name
-        HAVING SUM(bill_1xrtt_us_roaming_kb + bill_1xrtt_special_carrier_kb) > 0
-        ) dbs ;
+log4j.appender.CONSOLE.layout=org.apache.log4j.EnhancedPatternLayout
+log4j.appender.CONSOLE.layout.ConversionPattern=%-4r %-5p (%t) [%X{collection} %X{shard} %X{replica} %X{core}] %c{1.} %m%n
+
+#- size rotation with log cleanup.
+log4j.appender.file=org.apache.log4j.RollingFileAppender
+log4j.appender.file.MaxFileSize=4MB
+log4j.appender.file.MaxBackupIndex=9
+
+#- File to log to and log format
+log4j.appender.file.File=${solr.log}/solr.log
+log4j.appender.file.layout=org.apache.log4j.EnhancedPatternLayout
+log4j.appender.file.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} %-5p (%t) [%X{collection} %X{shard} %X{replica} %X{core}] %c{1.} %m\n
+
+log4j.logger.org.apache.zookeeper=WARN
+log4j.logger.org.apache.hadoop=WARN
+
+# set to INFO to enable infostream log messages
+log4j.logger.org.apache.solr.update.LoggingInfoStream=OFF
 
 
-INSERT INTO TABLE aeris.device_billing_summary_adjusted_MONTH_PHYEAR_PH	
-SELECT a.account_id,
-  a.device_id,
-  imsi,
-  iccid,
-  primary_min,
-  esn,
-  msisdn,
-  carrier_provider,
-  billing_period_id,
-  bill_year_month,
-  bill_run_id,
-  bill_status,
-  bill_status_start,
-  bill_status_end,
-  rate_plan_id,
-  a.rate_plan_name,
-  active_days_in_month,
-  prorate_factor,
-  access_fee,
-  sms_monthly_fee,
-  voice_monthly_fee,
-  xrtt_monthly_fee,
-  ip_monthly_fee,
-  prov_sms_price,
-  prov_1xrtt_price,
-  bill_sms_price,
-  bill_sms_canada_price,
-  bill_sms_mexico_price,
-  bill_sms_us_roaming_price,
-  bill_sms_special_carrier_price,
-  bill_1xrtt_price,
-  bill_1xrtt_canada_price,
-  bill_1xrtt_mexico_price,
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_us_roaming_charges,0) > 0
-    THEN
-      CASE
-        WHEN usroamingsum >= NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-        THEN bill_1xrtt_us_roaming_price
-        ELSE CAST(0 AS DOUBLE)
-      END
-    ELSE bill_1xrtt_us_roaming_price
-  END AS bill_1xrtt_us_roaming_price,
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_spec_carr_charges,0) > 0
-    THEN
-      CASE
-        WHEN speccarriersum >= discounts_bill_1xrtt_spec_carr_charges
-        THEN bill_1xrtt_spec_carr_price
-        ELSE CAST(0 AS DOUBLE)
-      END
-    ELSE bill_1xrtt_spec_carr_price
-  END AS bill_1xrtt_spec_carr_price ,
-  plan_included_sms_msgs,
-  plan_included_1xrtt_kb,
-  prov_sms_msgs,
-  prov_1xrtt_kb,
-  bill_sms_msgs,
-  bill_sms_canada_msgs,
-  bill_sms_mexico_msgs,
-  bill_sms_us_roaming_msgs,
-  bill_sms_special_carrier_msgs,
-  bill_sms_other_countries_msgs,
-  bill_1xrtt_kb,
-  bill_1xrtt_canada_kb,
-  bill_1xrtt_mexico_kb,
-  bill_1xrtt_us_roaming_kb,
-  bill_1xrtt_special_carrier_kb,
-  included_sms_msgs,
-  included_1xrtt_bytes,
-  prov_sms_traffic_charges,
-  prov_1xrtt_traffic_charges,
-  prov_total_traffic_charges,
-  bill_sms_traffic_charges,
-  bill_sms_canada_charges,
-  bill_sms_mexico_charges,
-  bill_sms_us_roaming_charges,
-  bill_sms_special_carrier_charges,
-  bill_sms_other_countries_charges,
-  bill_1xrtt_traffic_charges,
-  bill_1xrtt_canada_charges,
-  bill_1xrtt_mexico_charges,
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_us_roaming_charges,0) > 0
-    THEN
-      CASE
-        WHEN usroamingsum >= NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-        THEN
-          CASE
-            WHEN (usroamingsum -bill_1xrtt_us_roaming_charges) < NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-            THEN usroamingsum-discounts_bill_1xrtt_us_roaming_charges
-            ELSE bill_1xrtt_us_roaming_charges
-          END
-        ELSE CAST(0 AS DOUBLE)
-      END
-    ELSE bill_1xrtt_us_roaming_charges
-  END AS bill_1xrtt_us_roaming_charges,
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_spec_carr_charges,0) > 0
-    THEN
-      CASE
-        WHEN speccarriersum >= discounts_bill_1xrtt_spec_carr_charges
-        THEN
-          CASE
-            WHEN (speccarriersum              -bill_1xrtt_spec_carr_charges) < discounts_bill_1xrtt_spec_carr_charges
-            THEN speccarriersum-discounts_bill_1xrtt_spec_carr_charges
-            ELSE bill_1xrtt_spec_carr_charges
-          END
-        ELSE CAST(0 AS DOUBLE)
-      END
-    ELSE bill_1xrtt_spec_carr_charges
-  END AS bill_1xrtt_spec_carr_charges,
-  bill_total_traffic_charges - (
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_us_roaming_charges,0) > 0
-    THEN
-      CASE
-        WHEN usroamingsum >= NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-        THEN
-          CASE
-            WHEN (usroamingsum-bill_1xrtt_us_roaming_charges) < NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-            THEN bill_1xrtt_us_roaming_charges - (usroamingsum-discounts_bill_1xrtt_us_roaming_charges)
-            ELSE CAST(0 AS DOUBLE)
-          END
-        ELSE bill_1xrtt_us_roaming_charges
-      END
-    ELSE CAST(0 AS DOUBLE)
-  END +
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_spec_carr_charges,0) > 0
-    THEN
-      CASE
-        WHEN speccarriersum >= discounts_bill_1xrtt_spec_carr_charges
-        THEN
-          CASE
-            WHEN (speccarriersum -bill_1xrtt_spec_carr_charges) < discounts_bill_1xrtt_spec_carr_charges
-            THEN bill_1xrtt_spec_carr_charges - (speccarriersum -discounts_bill_1xrtt_spec_carr_charges)
-            ELSE CAST(0 AS DOUBLE)
-          END
-        ELSE bill_1xrtt_spec_carr_charges
-      END
-    ELSE CAST(0 AS DOUBLE)
-  END) AS bill_total_traffic_charges,
-  included_sms_value,
-  included_1xrtt_value,
-  prorated_access_fee,
-  prorated_sms_monthly_fee,
-  prorated_voice_monthly_fee,
-  prorated_1xrtt_monthly_fee,
-  prorated_ip_monthly_fee,
-  first_bill_fee,
-  activation_fee,
-  deactivation_fee,
-  reactivation_fee,
-  suspend_fee,
-  suspend_count,
-  unsuspend_fee,
-  unsuspend_count,
-  total_monthly_charge,
-  total_charges - (
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_us_roaming_charges,0) > 0
-    THEN
-      CASE
-        WHEN usroamingsum >= NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-        THEN
-          CASE
-            WHEN (usroamingsum-bill_1xrtt_us_roaming_charges) < NVL(discounts_bill_1xrtt_us_roaming_charges,0)
-            THEN bill_1xrtt_us_roaming_charges - (usroamingsum-discounts_bill_1xrtt_us_roaming_charges)
-            ELSE CAST(0 AS DOUBLE)
-          END
-        ELSE bill_1xrtt_us_roaming_charges
-      END
-    ELSE CAST(0 AS DOUBLE)
-  END +
-  CASE
-    WHEN NVL(discounts_bill_1xrtt_spec_carr_charges,0) > 0
-    THEN
-      CASE
-        WHEN speccarriersum >= discounts_bill_1xrtt_spec_carr_charges
-        THEN
-          CASE
-            WHEN (speccarriersum -bill_1xrtt_spec_carr_charges) < discounts_bill_1xrtt_spec_carr_charges
-            THEN bill_1xrtt_spec_carr_charges - (speccarriersum -discounts_bill_1xrtt_spec_carr_charges)
-            ELSE CAST(0 AS DOUBLE)
-          END
-        ELSE bill_1xrtt_spec_carr_charges
-      END
-    ELSE CAST(0 AS DOUBLE)
-  END) AS total_charges ,
-  report_group,
-  rounding_policy,
-  prov_voice_price,
-  PROV_VOICE_US_ROAMING_PRICE,
-  PROV_VOICE_MEXICO_PRICE,
-  PROV_VOICE_CANADA_PRICE,
-  bill_voice_price,
-  bill_voice_us_roaming_price ,
-  canada_voice_price,
-  mexico_voice_price,
-  included_voice_minutes,
-  included_voice_value,
-  bill_voice_mins,
-  prov_voice_mins,
-  bill_voice_traffic_charges,
-  prov_voice_traffic_charges,
-  prov_voice_us_roam_mins,
-  prov_voice_us_roam_charges,
-  prov_voice_mexico_mins,
-  prov_voice_mexico_charges,
-  prov_voice_canada_mins,
-  prov_voice_canada_charges,
-  prov_voice_other_countries_mins,
-  prov_voice_other_countries_charges,
-  canada_voice_mins,
-  canada_voice_charges,
-  mexico_voice_mins,
-  mexico_voice_charges,
-  us_roaming_voice_mins,
-  us_roaming_voice_charges,
-  bill_voice_other_countries_mins,
-  bill_voice_other_countries_charges,
-  incl_roam_flg,
-  bill_1xrtt_other_countries_kb,
-  bill_xrtt_other_countries_price,
-  bill_1xrtt_other_countries_charges,
-  bill_gprs_price ,    
-  plan_included_gprs_kb ,
-  bill_gprs_kb ,
-  included_gprs_bytes ,
-  bill_gprs_traffic_charges ,
-  included_gprs_value ,
-  prorated_gprs_monthly_fee ,
-  gprs_monthly_fee ,
-  prov_gprs_price ,
-  prov_gprs_kb ,
-  prov_gprs_traffic_charges ,
-  bill_gprs_zone2_price ,
-  bill_gprs_zone2_kb ,
-  bill_gprs_zone2_charges ,
-  bill_gprs_zone3_price ,
-  bill_gprs_zone3_kb ,
-  bill_gprs_zone3_charges ,
-  bill_gprs_zone4_price ,
-  bill_gprs_zone4_kb ,
-  bill_gprs_zone4_charges ,
-  plan_included_voice_minutes ,
-  rate_plan_start_date,
-  rate_plan_end_date,
-  a.custom_field_1,
-  a.custom_field_2,
-  a.custom_field_3,
-  a.custom_field_4,
-  a.custom_field_5,
-  a.SUBSCRIBER_ID,
-  null as pool_name            
-FROM aeris.device_billing_summary_MONTH_PHYEAR_PH a
-LEFT OUTER JOIN
-  (SELECT device_id,
-    rate_plan_name,
-    SUM(bill_1xrtt_us_roaming_charges) over (partition BY rate_plan_name order by device_id ROWS UNBOUNDED PRECEDING) AS usroamingsum,
-    SUM(bill_1xrtt_spec_carr_charges) over (partition BY rate_plan_name order by device_id ROWS UNBOUNDED PRECEDING)  AS speccarriersum
-  FROM aeris.device_billing_summary_MONTH_PHYEAR_PH
-  WHERE bill_status          = 4
-  AND account_id             = 10115
-  AND plan_included_1xrtt_kb > 0
-  ) b
-ON a.device_id = b.device_id
-and a.rate_plan_name = b.rate_plan_name
-LEFT OUTER JOIN aeris.dbs_manual_adj c
-ON a.rate_plan_name = c.rate_plan_name
-WHERE a.account_id  = 10115;
+log4j.appender.file=org.apache.log4j.rolling.RollingFileAppender
+log4j.appender.file.rollingPolicy=org.apache.log4j.rolling.FixedWindowRollingPolicy
+log4j.appender.file.rollingPolicy.maxIndex=5 
+log4j.appender.file.rollingPolicy.ActiveFileName =${solr.log}/solr.log
+log4j.appender.file.rollingPolicy.FileNamePattern=${solr.log}/solr.%i.log
+log4j.appender.file.triggeringPolicy=org.apache.log4j.rolling.SizeBasedTriggeringPolicy  
+log4j.appender.file.triggeringPolicy.MaxFileSize=4MB 
+log4j.appender.file.layout=org.apache.log4j.EnhancedPatternLayout
+log4j.appender.file.layout.ConversionPattern=%d{yyyy-MM-dd HH:mm:ss.SSS} %-5p (%t) [%X{collection} %X{shard} %X{replica} %X{core}] %c{1.} %m\n
+
+log4j.rootLogger=INFO, loggerId  
+log4j.appender.loggerId=org.apache.log4j.rolling.RollingFileAppender  
+log4j.appender.loggerId.rollingPolicy=org.apache.log4j.rolling.FixedWindowRollingPolicy  
+log4j.appender.loggerId.rollingPolicy.maxIndex=5  
+log4j.appender.loggerId.triggeringPolicy=org.apache.log4j.rolling.SizeBasedTriggeringPolicy  
+log4j.appender.loggerId.triggeringPolicy.MaxFileSize=10000000  
+log4j.appender.loggerId.rollingPolicy.FileNamePattern=worker-%i.log.gz  
+log4j.appender.loggerId.rollingPolicy.ActiveFileName=worker.log  
+log4j.appender.loggerId.layout=org.apache.log4j.PatternLayout  
+log4j.appender.loggerId.layout.ConversionPattern=%d [%t] %-5p (%F:%L) - %m%n  
+   
+
+<appender name="rollingFile" class="org.apache.log4j.rolling.RollingFileAppender">
+		<!-- <param name="Threshold" value="DEBUG" /> -->
+		<rollingPolicy class="org.apache.log4j.rolling.FixedWindowRollingPolicy">
+			<param name="FileNamePattern" value="${LOG_FULLPATH}.%i" />
+			<param name="ActiveFileName" value="${LOG_FULLPATH}" />
+			<param name="MaxIndex" value="10" />
+		</rollingPolicy>
+		<triggeringPolicy class="org.apache.log4j.rolling.SizeBasedTriggeringPolicy">
+			<param name="MaxFileSize" value="50000000" />
+		</triggeringPolicy>
+		<layout class="org.apache.log4j.EnhancedPatternLayout">
+			<param name="ConversionPattern"
+				value="t:%-6r [%.20t] %-5p %d{MMM-dd-yyyy HH:mm:ss,SSS/zzz} [%x]  %c{1} - %m%n" />
+		</layout>
+</appender>
