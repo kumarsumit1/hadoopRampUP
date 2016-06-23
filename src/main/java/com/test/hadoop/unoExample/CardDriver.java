@@ -27,7 +27,7 @@ import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
 public class CardDriver extends Configured implements Tool {
-
+//https://blog.cloudera.com/blog/2013/08/how-to-use-eclipse-with-mapreduce-in-clouderas-quickstart-vm/
 	@Override
 	public int run(String[] args) throws Exception {
 		String input, output;
